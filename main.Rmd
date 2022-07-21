@@ -1,0 +1,469 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+# Sigar Sigar 23191175
+# Setup
+loading Library
+```{r message=FALSE, warning =FALSE}
+library(dplyr)
+library(vtreat)
+library(ggplot2)
+library(ggthemes)
+library(ggpubr)
+```
+
+setting up theme
+```{r message=FALSE}
+ass1_theme <- theme_few() +
+                  theme(axis.text.y=element_text(size=rel(0.8)))+
+                  theme(plot.margin=margin(10,30,10,30))+
+                  grids(linetype ="dashed", color = "black", size = 0.5)
+    
+
+```
+
+## Introduction
+In this report, I analyse US Accident injury Dataset , which can be obtained from Data.gov, published by US Department of Labour. The data was collected over 15 years and there is a total of 202,814 observations. I try to find relationships between different factors surrounding the incident, provide my initial thought or realisation after the analysis.
+
+Reading in the data
+```{r message=FALSE}
+data = read.csv("us_data.csv")
+```
+
+## Initial look at data
+
+Examine data using str
+```{r message=FALSE, results='hide'}
+str(data)
+classes = lapply(data, class)
+
+## determining  number of variables with different types
+unique(classes)
+sum(classes == "character")
+sum(classes == "integer")
+sum(classes == "numeric")
+
+```
+
+
+The data contains 202,814 observations with 57 variables per data point, 39 
+variables of type character, 13 variables of type integer and 5 of type numeric. 
+Of the 39 char variables,Degree_injury_cd, occupation_cD, Activity_CD,
+INJURY_SOURCE_CD, NATURE_INJURY_CD, INJ_BODY_PART_CD, IMMED_NOTIFY_CD is of 
+class Char but should be of type factor, since they hold codes that can only ever take a fixed number of values. COAL_METAL_IND,and TRANS_TERM should be of type factor.
+ACCIDENT_DT, RETURN_TO_WORK_DT, INVEST_BEGIN_DT have class character but should be of class Date. 
+
+Taking a look at the first few rows
+```{r message=FALSE , results='hide'}
+
+head(data,6)
+
+```
+Sample of the data shows us that code columns with invalid values correspond to name column with "NO VALUE FOUND".
+
+#### Converting appropriate data to factor and date before performing summary
+
+This is done because taking a summary of character type does not give any useful information.
+```{r message=FALSE, results='hide', warning=FALSE}
+for(title in names(data)){
+  
+  if(grepl("_CD", title)){
+    #convert all CODE columns "_CD" to factor
+    #convert code column to integer first since it only take integer values. Converts all other non-integer values to NAs
+    data[, title] = as.factor(as.integer(data[, title]))
+    
+  }
+  
+}
+data$CLOSED_DOC_NO = as.character(data$CLOSED_DOC_NO)
+data$COAL_METAL_IND = as.factor(data$COAL_METAL_IND)
+data$TRANS_TERM = as.factor(data$TRANS_TERM)
+data$INVEST_BEGIN_DT = as.Date(data$INVEST_BEGIN_DT, "%m/%d/%Y")
+data$ACCIDENT_DT = as.Date(data$ACCIDENT_DT, "%d/%m/%Y")
+data$RETURN_TO_WORK_DT = as.Date(data$RETURN_TO_WORK_DT , "%m/%d/%Y")
+```
+
+performing summary on data
+```{r message=FALSE, results='hide'}
+new_classes = sapply(data, class)
+
+summary(data)
+
+```
+UG_LOCATION_CD, UG_MINING_METHOD_CD,MINING_EQUIP_CD, EQUIP_MFR_CD IMMED_NOTIFY_CD,EQUIP_MODEL_NO and their corresponding name fields, and CONTRACTOR_ID have more than half the data missing. 
+
+
+# Transformation
+
+## Dealing with NAs and Missing values
+Introducing NAs into rows with missing values for character class to make it easier to deal with later.
+```{r message=FALSE,results='hide', warning=FALSE}
+for(title in names(data[new_classes == "character" | new_classes == "factor"])){
+    data[, title] = na_if(data[, title], "")
+    data[, title] = na_if(data[, title], "?")
+  }
+```
+
+Checking the rows with NAs
+```{r}
+NA_count = sapply(lapply(data, is.na), sum)
+NA_count[NA_count > 0]
+```
+
+For columns with low NA counts, less than 5000, I will delete the rows with the NAs because this will have a negligible effect on the sample size.
+```{r, warning=FALSE}
+for(title in names(NA_count[NA_count > 0 & NA_count<5000])){
+  data = data[!is.na(data[, title]),]
+}
+
+NA_count = sapply(lapply(data, is.na), sum)
+NA_count[NA_count > 0]
+
+```
+
+### Contractor_ID
+Since blank values in Contractor_ID correspond to an incident that did not involve a contractor, we convert all blank spaces to "No Contractor"
+```{r message=FALSE, results='hide'}
+
+data = mutate (data,
+  CONTRACTOR_ID = ifelse(is.na(CONTRACTOR_ID) , "No Contractor", CONTRACTOR_ID)
+  
+)
+
+```
+
+### Underground location and Equipment
+
+```{r, results='hide'}
+#inspecting missing data from Underground Location
+
+lapply(lapply((data[data$SUBUNIT == "UNDERGROUND",])[,grepl("UG", names(data))], is.na),sum)
+ #inspecting missing data from Equipment collumn
+data[is.na(data$EQUIP_MFR_CD) & is.na(data$MINING_EQUIP_CD),]
+
+```
+All missing data in the UG_LOCATION_CD, UG_LOCATION  originate from the fact that the incident did not take place underground. Thus, when doing any analysis, only use these variables when examining incident that occurred underground. Converting the missing values in these columns to _invalid_ is an apt strategy to deal the Missing values.
+
+
+NAs from MINING_EQUIP_CD, MINING_EQUIP_NAME, EQUIP_MFR_CD, EQUIP_MFR_NAME are as a result of the incident not involving an equipment.Converting the missing values in these columns to _invalid_ is an apt strategy to deal the Missing values.
+
+### Experience and Date
+```{r message=FALSE, results='hide'}
+
+# looking at missing values from experience columns and occupation to see if the incident involved an employee
+
+data[(is.na(data$JOB_EXPER) | is.na(data$MINE_EXPER) | is.na(data$TOT_EXPER))& is.na(data$OCCUPATION_CD),]
+
+#looking at missing values from date columns and occupation to see if the incident involved an employee
+
+data[(is.na(data$RETURN_TO_WORK_DT))& is.na(data$OCCUPATION_CD),]
+
+#deleting rows That have employees with missing experience.
+emp_noexp = data[(is.na(data$JOB_EXPER) & is.na(data$MINE_EXPER) & is.na(data$TOT_EXPER))& data$OCCUPATION != "NO VALUE FOUND",]
+dim(emp_noexp)
+
+```
+
+Exploring these values, it is noted that the a majority of the incidents that have missing values in the Experience columns and RETURN_TO_WORK_DT are systematic since the incident did not involve employees. Thus replacing the values in the Job Experience columns with the mean from the data available would not make much sense. Date column will be left as is since converting the Null Values to _invalid_ will change the class type of the whole row to character. 
+
+Looking at activity, injury source, nature injury injured body part  and occupation to ascertain whether the incidents involve the same incidents and if there are any employees involved.
+```{r}
+
+no_employee = data[is.na(data$OCCUPATION_CD),]
+sum(is.na(no_employee$ACTIVITY_CD))
+sum(is.na(no_employee$INJURY_SOURCE_CD))
+sum(is.na(no_employee$NATURE_INJURY_CD))
+sum(is.na(no_employee$INJ_BODY_PART_CD))
+sum(is.na(no_employee$RETURN_TO_WORK_DT))
+```
+These columns have a minimum of 24092 common rows. Their values are because no employee was involved in the incident.Converting the missing values in these columns to _invalid_ is an apt strategy to deal the Missing values.
+
+SCHEDULE_CHARGE,DAYS_RESTRICT, DAYS_LOST, IMMED_NOTIFY_CD, IMMED_NOTIFY, INVEST_BEGIN_DT, contain Null values since the incident does not apply for these rows. For the columns that contain class Factor or Character, the null value will be replaced with _invalid_. 
+
+### Treating the data for missing values
+```{r message=FALSE, results='hide'}
+var_list = setdiff(names(NA_count[NA_count > 0]), c("TOT_EXPER", "MINE_EXPER", "JOB_EXPER", "INVEST_BEGIN_DT", "RETURN_TO_WORK_DT", "SCHEDULE_CHARGE","DAYS_RESTRICT", "DAYS_LOST"))
+treatment_plan <- design_missingness_treatment(data, varlist = var_list)                 
+treated_data <- prepare(treatment_plan,data)
+
+```
+
+# DATA Exploration
+
+## Analyzing year, quarter and Incident 
+In this subsection, we investigate if there is a relationship between time, number of incidents and degree of injury. 
+```{r}
+year_count = treated_data %>% count(CAL_YR)
+ggplot(data = year_count, aes(x = CAL_YR, y = n)) +
+  geom_point() +
+  geom_line()+
+  geom_smooth( method = "lm")+
+  xlab("Year") +
+  ylab("Incidents") +
+  labs(title = "INCIDENTS PER YEAR") +
+  ass1_theme 
+```
+
+Generally, there is a decreasing number of cases as years progresses but the number of incidents in 2015 seem to be much lower than the trend would have suggested.
+
+looking at 2015
+```{r}
+
+ggplot(data = treated_data[treated_data$CAL_YR == 2015,], aes(x = CAL_QTR)) +
+    geom_bar()+
+    xlab("Calendar Quarter") +
+    ylab("Incidents") +
+    labs(title = "2015") +
+    ass1_theme
+    
+
+```
+2015 only has data from the first two quarters. This explains why the data seem to deviate from the trend. It is important to take this fact into consideration when assessing the effect of year on the number of incidents in any analysis.
+
+Checking if Fiscal quarter has any effect on Number of incidents.
+```{r}
+FIS_QTR_COUNT = treated_data %>% count(FISCAL_QTR)
+
+ggplot(data = treated_data, aes(x = FISCAL_QTR)) +
+    geom_bar()+
+    xlab("Fiscal Quarter") +
+    ylab("Incidents") +
+    labs(title = "Incidents In each quarter") +
+    geom_hline(aes(yintercept = mean(FIS_QTR_COUNT$n))) +
+    ass1_theme
+
+```
+As expected, the first fiscal quarter of the year has fewer incidents than average. Whereas the last quarter has substantially more incidents than the average. Reasoning for my expectation is, the first quarter of the year coincides with the major holidays of the December period, thus, company usually experience a large percentage of employees taking leave for the holiday period. This in turn reduced the expected number of incident solely based on the fact that there are fewer people working.
+During the last quarter, employees are usually under more pressure to achieve their set targets before the end of the Financial year and thus, their is a higher propensity for incidents to occur as safety measures are not adhered to as they usually are. 
+
+```{r}
+ggplot(treated_data) +
+  geom_bar(aes(x = DEGREE_INJURY, fill = DEGREE_INJURY)) +
+  facet_wrap(~FISCAL_QTR, nrow = 2) +
+  xlab("Degree of injury") +
+  ylab("Number of Injuries") + 
+  labs(title = "Specific levels of injury in every quarter") +
+  coord_flip() +
+  ass1_theme +
+  theme(legend.position = "none" )
+```
+The degree of Injuries in every quarter seem to follow the same distribution, where more severe degree of Injuries, Permanent disability or fatality, occur at a much lower rate than non-severe injuries.
+
+## Location
+In this section, we investigate whether there is a perceived relationship between the location of the incident and the number of injuries, and severity of injuries.
+
+```{r}
+
+SUBUNIT_COUNT = treated_data %>% count(SUBUNIT)
+ggplot(SUBUNIT_COUNT) +
+  geom_bar(aes(x = "", y = n, fill =SUBUNIT), stat="identity", width=1) +
+   
+  labs(title = " Num Injuries v location") +
+  coord_polar("y", start = 0)+
+  theme_void()
+
+
+
+sum(sort(SUBUNIT_COUNT$n, decreasing = T)[1:3])/sum(SUBUNIT_COUNT$n)
+```
+Injuries that occur underground, in "Strip, quary, open pit " and, Preparation plant/Mill operation make up more than 90% of the incidents, with Underground topping the list for location with highest probability of having an incident.
+
+#### Exploring Underground incidents
+
+
+```{r}
+
+data_ug = data[data$SUBUNIT == "UNDERGROUND" &  !is.na(data$UG_LOCATION_CD),]
+ggplot(data_ug) +
+  geom_bar(aes(x = UG_LOCATION)) +
+  xlab("SUBUNIT") +
+  ylab("Number of Injuries") + 
+  labs(title = "Injuries v SUBUNIT")+
+  coord_flip() +
+  ass1_theme 
+  
+```
+Of all location, the Face in the Underground Subunit contributes to most incidents. Last open Crosscut and Underground Intersection follow closely behind.
+
+Analysing if Underground Mining methods affects location of incident.
+
+```{r}
+
+ggplot(data[!is.na(data$UG_MINING_METHOD_CD),]) +
+  geom_count(mapping = aes(x=UG_MINING_METHOD, y=UG_LOCATION))+
+  xlab("Mining Method") +
+  ylab("Number of Injuries") + 
+  labs(title = "Specific levels of injury in subunit") +
+  ass1_theme+
+  theme( legend.position = "none", axis.text.x = element_text(angle = 90) )
+  
+```
+Even though the previous graph suggest that the face SUBUNIT has the highest probability of having an incident, the mining method is the most important factor. Specifically, the continuous mining method accounts for most of incidents regardless of subunit.
+
+
+#### Exploring Schedule charge and location 
+```{r warning= FALSE}
+
+cost_loc = data[!is.na(data$SCHEDULE_CHARGE),] %>% group_by(SUBUNIT) %>% summarise(total = sum(SCHEDULE_CHARGE))
+ggplot(cost_loc) + 
+  geom_boxplot(aes(x = total)) +
+  labs(title = "Schedule Charge boxplot group by SUBUNIT") +
+  ass1_theme
+ggplot(cost_loc) +
+  geom_histogram(aes(x = SUBUNIT, y = total ), stat = "identity") +
+  coord_flip() +
+  ylab("Total Schedule charge") +
+  labs(title = "Total Schedule charge at each SUBUNIT") +
+  ass1_theme
+```
+Bar graph show that all subunits save three have a low schedule charge, below 500,000. The box plot highlights the highest schedule charge as an outlier.
+Surprisingly, even though the underground subunit had the most incidents of any location, "Strip, Quarry, Open pit" subunit actually had the a higher total schedule Charge. The assumption following this revelation is that the "Strip, Quary, Open pit" subunit had a greater number of more serious incidents.
+
+#### Exploring degree of injury, with schedule charge and location
+
+```{r}
+treated_data[!is.na(treated_data$SCHEDULE_CHARGE) ,] %>% group_by(DEGREE_INJURY) %>% summarise(schedule_cost = mean(SCHEDULE_CHARGE))
+
+
+ggplot(treated_data[(treated_data$SUBUNIT_CD == 1 |treated_data$SUBUNIT_CD == 3 )  & !is.na(treated_data$SCHEDULE_CHARGE) ,]) +
+  geom_bar(aes(x = DEGREE_INJURY, fill = DEGREE_INJURY)) +
+  facet_wrap(~SUBUNIT, nrow = 2) +
+  xlab("Degree of injury") +
+  ylab("Number of Injuries") + 
+  labs(title = "specific levels of injury in subunit") +
+  coord_flip() +
+  ass1_theme +
+  theme(legend.position = "none" )
+```
+The underground Subunit, has more incidents with a schedule charge of zero than the "Strip,  quarry, pit" Sub unit.
+
+
+Eliminating Incidents with zero scheduled cost
+```{r}
+treated_data[!is.na(treated_data$SCHEDULE_CHARGE) & treated_data$SCHEDULE_CHARGE > 0,] %>% group_by(DEGREE_INJURY) %>% summarise(mean_cost = mean(SCHEDULE_CHARGE))
+
+```
+
+
+```{r}
+
+ggplot(treated_data[(treated_data$SUBUNIT_CD == 1 |treated_data$SUBUNIT_CD == 3 ) & treated_data$SCHEDULE_CHARGE > 0 & !is.na(treated_data$SCHEDULE_CHARGE) ,]) +
+  geom_bar(aes(x = DEGREE_INJURY, fill = DEGREE_INJURY)) +
+  facet_wrap(~SUBUNIT, nrow = 2) +
+  xlab("Degree of injury") +
+  ylab("Number of Injuries") + 
+  labs(title = "Specific levels of injury in subunit") +
+  coord_flip() +
+  ass1_theme+
+  theme( legend.position = "none" )
+```
+The table and graph above adds on to my initial assumption that "Strip, Quarry, Open" has more costly type of injury than Underground especially injuries due to natural causes and injuries to non-employees, hence the higher cost.
+
+#### Exploring times and incident
+
+```{r , warning=FALSE}
+ggplot(treated_data) + 
+  geom_density(aes(x = ACCIDENT_TIME), color = "Blue")+
+  geom_density(aes(x = SHIFT_BEGIN_TIME), color = "red") +
+  xlab("TIME") +
+  ass1_theme +
+  annotate("text", x = 9000, y = 0.0005,
+    label = "Incorrect time")
+  
+
+```
+There are some erroneous time entries in the time columns. The max value in the time column should be 2400.
+```{r}
+
+head(treated_data[treated_data$ACCIDENT_TIME >2400 & treated_data$SHIFT_BEGIN_TIME >2400,c("ACCIDENT_TIME", "SHIFT_BEGIN_TIME" )],10)
+```
+
+I will deal with these errors by converting the rows to NAs then converting the values to means of the existing data.
+```{r}
+
+# converting to NAs
+
+treated_data_time = mutate(treated_data , 
+                        ACCIDENT_TIME = ifelse(ACCIDENT_TIME > 2400, NA, ACCIDENT_TIME),
+                        SHIFT_BEGIN_TIME = ifelse(SHIFT_BEGIN_TIME > 2400,NA, SHIFT_BEGIN_TIME)
+                        )
+
+
+var_list = c("ACCIDENT_TIME","SHIFT_BEGIN_TIME")
+treatment_plan <- design_missingness_treatment(treated_data_time, varlist = var_list)                 
+treated_data_time <- prepare(treatment_plan,treated_data_time)
+
+
+```
+
+
+```{r}
+# plotting time of incident.
+ggplot(treated_data_time) + 
+  geom_density(aes(x = SHIFT_BEGIN_TIME), color = "red") +
+  xlab("Time of incident") +
+  labs(title = "density of incident timing") +
+  ass1_theme +
+  annotate("text", x = 630, y = 0.003,
+    label = "Global maxima")
+
+# incidents that occur between 0250 and 1000
+
+nrow(treated_data_time[treated_data_time$SHIFT_BEGIN_TIME < 1000 & treated_data_time$SHIFT_BEGIN_TIME > 250, ])/nrow(treated_data_time)
+  
+```
+The graph shows that a large percentage of incident take place in the early hours of the morning before 10 00 hours and after 02 50 hours. Approximately 62% of incidents occur in the stated time interval with a global maximum around 06 30 hours. 
+
+#### Experience and incidents
+```{r warning=FALSE}
+ggplot(treated_data) + 
+  geom_density(aes(x = TOT_EXPER), color = "red") +
+  xlab("Total experience")+
+  labs(title = "distrbution of incidents given exp") +
+  ass1_theme +
+  annotate("text", x = 10, y = 0.05,
+    label = paste("exponential decrease" ,"as experience increases", sep = "\n") )
+
+```
+As expected, the rate of injury decreases with amount of experience. This could be because employees with more experience are less likely to make mistakes that result in an incident. Moreover, there tends to be more people with lower experience, thus by sheer numbers, we expect higher incident among them. Lastly, the decrease seems to be exponential.
+
+
+#### Exploring at risk occupation
+
+```{r}
+
+occ_count = data[!is.na(data$OCCUPATION_CD),] %>% group_by(OCCUPATION_CD) %>% summarise(count = n())
+
+##selecting 10 most risky occupation because a majority have less than 1000
+occ_count_10 = (occ_count[order(occ_count$count, decreasing = T),])[1:10,]
+
+# adding occupation column to data frame
+key = data[!duplicated(data$OCCUPATION_CD),c("OCCUPATION","OCCUPATION_CD")]
+key10 = (key[key$OCCUPATION_CD %in% occ_count_10$OCCUPATION_CD,])
+key10 = key10[order(key10$OCCUPATION_CD),]
+occ_count_10 = occ_count_10[order(occ_count_10$OCCUPATION_CD),]
+
+occ_count_10$OCCUPATION = key10$OCCUPATION
+
+
+ggplot(occ_count_10) +
+  geom_bar(aes(x = count, y = OCCUPATION_CD, fill = c(OCCUPATION) ), stat = "identity") +
+  xlab("Degree of injury") +
+  ylab("occupation code") + 
+  labs(title = "Injuries in Occupation") +
+  ass1_theme +
+  theme( legend.title=element_text(size=1), 
+    legend.text=element_text(size=rel(0.6)),
+    legend.key.size = unit(0.35, 'cm'), 
+    legend.key.height = unit(0.35, 'cm'), 
+    legend.direction ="vertical",
+    legend.position = "bottom", legend.box.margin = margin(1,1,1,1))+
+    theme(plot.margin=margin(1,30,1,30)) +
+    scale_fill_manual(values = c("red", "blue", "green", "yellow","black", "violet","purple", "orange", "snow2", "tan"))
+    
+  
+```
+My initial expectation was that the highest rate of incidents will be among laborers but it turns out, Maintenance crew actually experienced the highest rate of accidents.
